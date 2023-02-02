@@ -8,6 +8,10 @@ import torch.nn as nn
 from torchvision.utils import save_image
 from utils import get_loops, get_dataset, get_network, get_eval_pool, evaluate_synset, get_daparam, match_loss, get_time, TensorDataset, epoch, DiffAugment, ParamDiffAug
 
+from pgd import MatchingLossPGD
+
+classes = ['plane', 'car', 'bird', 'cat',
+           'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
 
 def main():
 
@@ -30,6 +34,12 @@ def main():
     parser.add_argument('--data_path', type=str, default='data', help='dataset path')
     parser.add_argument('--save_path', type=str, default='result', help='path to save results')
     parser.add_argument('--dis_metric', type=str, default='ours', help='distance metric')
+    # ===== PGD Args
+    parser.add_argument('--pgd', type=int, default=0, help="1: use PGD")
+    parser.add_argument('--steps', type=int, default=10, help='number of steps for PGD attack')
+    parser.add_argument('--eps', type=float, default=8, help='perturbation bound for PGD attach, default 8(/255)')
+    parser.add_argument('--alpha', type=float, default=2, help='learning rate or Alpha for PGD attack, default 2(/255)')
+    parser.add_argument('--random_start', type=int, default=0, help='1: randomly init adv examples in PGD attack')
 
     args = parser.parse_args()
     args.outer_loop, args.inner_loop = get_loops(args.ipc)
@@ -37,13 +47,18 @@ def main():
     args.dsa_param = ParamDiffAug()
     args.dsa = True if args.method == 'DSA' else False
 
+    # for PGD:
+    args.eps /= 255
+    args.alpha /= 255
+
     if not os.path.exists(args.data_path):
         os.mkdir(args.data_path)
 
     if not os.path.exists(args.save_path):
         os.mkdir(args.save_path)
 
-    eval_it_pool = np.arange(0, args.Iteration+1, 500).tolist() if args.eval_mode == 'S' or args.eval_mode == 'SS' else [args.Iteration] # The list of iterations when we evaluate models and record results.
+    eval_it_pool = np.arange(1, args.Iteration+1, 500).tolist() if args.eval_mode == 'S' or args.eval_mode == 'SS' else [args.Iteration] # The list of iterations when we evaluate models and record results.
+    eval_it_pool.append(args.Iteration)
     print('eval_it_pool: ', eval_it_pool)
     channel, im_size, num_classes, class_names, mean, std, dst_train, dst_test, testloader = get_dataset(args.dataset, args.data_path)
     model_eval_pool = get_eval_pool(args.eval_mode, args.model, args.model)
@@ -54,6 +69,8 @@ def main():
         accs_all_exps[key] = []
 
     data_save = []
+
+    namecounter = len([name for name in os.listdir("ExperimentImages/adversarialSynImages") if "png" in name])
 
 
     for exp in range(args.num_exp):
@@ -82,7 +99,7 @@ def main():
 
         for ch in range(channel):
             print('real images channel %d, mean = %.4f, std = %.4f'%(ch, torch.mean(images_all[:, ch]), torch.std(images_all[:, ch])))
-
+            print('real images channel %d, pixel max = %.4f, min=%.4f'%(ch, torch.max(images_all[:, ch]), torch.min(images_all[:, ch])))
 
         ''' initialize the synthetic data '''
         image_syn = torch.randn(size=(num_classes*args.ipc, channel, im_size[0], im_size[1]), dtype=torch.float, requires_grad=True, device=args.device)
@@ -103,6 +120,8 @@ def main():
         print('%s training begins'%get_time())
 
         for it in range(args.Iteration+1):
+
+            print(f"================= Iteration {it} ================== \n")
 
             ''' Evaluate synthetic data '''
             if it in eval_it_pool:
@@ -152,6 +171,9 @@ def main():
             loss_avg = 0
             args.dc_aug_param = None  # Mute the DC augmentation when learning synthetic data (in inner-loop epoch function) in oder to be consistent with DC paper.
 
+            ''' Initialize PGD Attack'''
+            if args.pgd:
+                attack = MatchingLossPGD(net, args)
 
             for ol in range(args.outer_loop):
 
@@ -187,6 +209,25 @@ def main():
                         img_real = DiffAugment(img_real, args.dsa_strategy, seed=seed, param=args.dsa_param)
                         img_syn = DiffAugment(img_syn, args.dsa_strategy, seed=seed, param=args.dsa_param)
 
+                    # PGD to find worst case real image and synthetic image to maximize D
+                    if args.pgd:
+                        _, img_syn_adv = attack(img_real, lab_real, img_syn, lab_syn)
+                        if ol % 5 == 0:
+                            for i in range(len(img_syn)):
+                                save_image(img_syn[i].cpu(), "ExperimentImages/synImages/"+str(namecounter)+ "_" + classes[lab_syn[i]]+".png")
+                                save_image(img_syn_adv[i].cpu(), "ExperimentImages/adversarialSynImages/"+str(namecounter)+ "_" + classes[lab_syn[i]]+".png")
+                                save_image(img_real[i].cpu(), "ExperimentImages/oriImages/"+str(namecounter)+ "_" + classes[lab_syn[i]]+".png")
+                                namecounter += 1
+                            if c % 5 == 0:
+                                print(f"Adversarial Images Statistics:")
+                                print(f"Mean: {torch.mean(img_syn_adv[:, 0]).cpu(),torch.mean(img_syn_adv[:, 1]).cpu(),torch.mean(img_syn_adv[:, 2]).cpu()}")
+                                print(f"StdDiff: {torch.std(img_syn_adv[:, 0]).cpu(), torch.std(img_syn_adv[:, 1]).cpu(), torch.std(img_syn_adv[:, 2]).cpu()}")
+                                print(f"MeanDiff: {torch.mean(img_syn_adv[:,0]-img_syn[:,0]).cpu(),torch.mean(img_syn_adv[:,1]-img_syn[:,1]).cpu(),torch.mean(img_syn_adv[:,2]-img_syn[:,2]).cpu()}")
+                                print(f"StdDiff: {torch.std(img_syn_adv[:,0]-img_syn[:,0]).cpu(), torch.std(img_syn_adv[:,1]-img_syn[:,1]).cpu(), torch.std(img_syn_adv[:,2]-img_syn[:,2]).cpu()}")
+                                print(f"MaxDiff: {torch.max(img_syn_adv[:,0]-img_syn[:,0]), torch.max(img_syn_adv[:,1]-img_syn[:,1]), torch.max(img_syn_adv[:,2]-img_syn[:,2])};")
+
+                        img_syn = img_syn_adv
+
                     output_real = net(img_real)
                     loss_real = criterion(output_real, lab_real)
                     gw_real = torch.autograd.grad(loss_real, net_parameters)
@@ -203,6 +244,9 @@ def main():
                 optimizer_img.step()
                 loss_avg += loss.item()
 
+                # Print Loss
+                print(f"Outer Loop iter {ol}: Matching Loss: {loss}; avg Loss: {loss_avg}\n")
+
                 if ol == args.outer_loop - 1:
                     break
 
@@ -212,8 +256,8 @@ def main():
                 dst_syn_train = TensorDataset(image_syn_train, label_syn_train)
                 trainloader = torch.utils.data.DataLoader(dst_syn_train, batch_size=args.batch_train, shuffle=True, num_workers=0)
                 for il in range(args.inner_loop):
-                    epoch('train', trainloader, net, optimizer_net, criterion, args, aug = True if args.dsa else False)
-
+                    netLossAvg, netAccAvg = epoch('train', trainloader, net, optimizer_net, criterion, args, aug = True if args.dsa else False)
+                    print(f"Outer Loop iter {ol} Inner Loop Iter {il}: network loss: {netLossAvg}, network acc: {netAccAvg} \n")
 
             loss_avg /= (num_classes*args.outer_loop)
 
