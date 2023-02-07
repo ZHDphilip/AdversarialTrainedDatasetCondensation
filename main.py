@@ -266,8 +266,12 @@ def main():
 
             if it == args.Iteration: # only record the final results
                 data_save.append([copy.deepcopy(image_syn.detach().cpu()), copy.deepcopy(label_syn.detach().cpu())])
-                torch.save({'data': data_save, 'accs_all_exps': accs_all_exps, }, os.path.join(args.save_path, 'res_%s_%s_%s_%dipc.pt'%(args.method, args.dataset, args.model, args.ipc)))
-
+                torch.save({'data': data_save, 'accs_all_exps': accs_all_exps, }, os.path.join(args.save_path, 'res_%s_%s_%s_%dipc_%s.pt'%(args.method, args.dataset, args.model, args.ipc, args.init)))
+                ckptFilename = 'modelCheckpoints/%s_%s_%s_IPC%d_synInit_%s'%(args.model, args.dataset, args.method, args.ipc, args.init)
+                if args.pgd == 1:
+                    ckptFilename += 'PGD_%d/255_%d/255_%dSteps'%(args.eps, args.alpha, args.steps)
+                ckptFilename += ".pth"
+                torch.save(net.state_dict(), ckptFilename)
 
     print('\n==================== Final Results ====================\n')
     for key in model_eval_pool:
