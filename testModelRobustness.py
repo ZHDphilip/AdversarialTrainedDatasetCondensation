@@ -11,6 +11,8 @@ from tqdm import tqdm
 
 from pgd import PGD
 
+from collections import OrderedDict
+
 classes = ['plane', 'car', 'bird', 'cat',
            'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
 
@@ -22,7 +24,6 @@ def main():
     parser.add_argument('--steps', type=int, default=10, help='number of steps for PGD attack')
     parser.add_argument('--eps', type=float, default=8, help='perturbation bound for PGD attach, default 8(/255)')
     parser.add_argument('--alpha', type=float, default=2, help='learning rate or Alpha for PGD attack, default 2(/255)')
-    parser.add_argument('--scale', type=float, default=1, help='scale in pgd attack')
     parser.add_argument('--model', type=str, default='ConvNet', help='model')
     parser.add_argument('--checkpoint', type=str, help="Path to model checkpoint")
     parser.add_argument('--data_path', type=str, default='data', help='dataset path')
@@ -42,10 +43,18 @@ def main():
 
     # Initialize Network from Checkpoint File
     model = get_network(args.model, channel, num_classes, im_size).to(args.device) # get a random model
-    model.load_state_dict(torch.load(args.checkpoint))
+    stateDict = torch.load(args.checkpoint)
+    # need this step because the original model was saved with nn.DataParallel
+    stateDictToLoad = OrderedDict()
+    for k, v in stateDict.items():
+        name = "module." + k
+        stateDictToLoad[name] = v
+    if args.model == "MLP":
+        stateDictToLoad = stateDict
+    model.load_state_dict(stateDictToLoad)
 
     # Initialize Adversarial Agent
-    agent = PGD(model, eps=args.eps, alpha=args.alpha, steps=args.steps, scale=args.scale)
+    agent = PGD(model, eps=args.eps, alpha=args.alpha, steps=args.steps)
 
     # Initialize Counters
     numExamples = 0
@@ -58,9 +67,9 @@ def main():
 
         # Get Original Output
         originalOutput = model(data)
-        originalPrediction = torch.argmax(originalOutput, axis=-1)
+        originalPrediction = np.argmax(originalOutput.cpu().data.numpy(), axis=-1)
 
-        numSuccessBeforeAttack += np.sum(np.equal(originalPrediction, label.data.numpy()))
+        numSuccessBeforeAttack += np.sum(np.equal(originalPrediction, label.cpu().data.numpy()))
         numExamples += label.shape[0]
 
         # Generate Adversarial Examples
@@ -68,14 +77,17 @@ def main():
 
         # Get Adversarial Output
         adversarialOutput = model(adversarialData)
-        adversarialPrediction = torch.argmax(adversarialOutput, axis=-1)
-        numSuccessAfterAttack += np.sum(np.equal(adversarialPrediction, label.data.numpy()))
+        adversarialPrediction = np.argmax(adversarialOutput.cpu().data.numpy(), axis=-1)
+        numSuccessAfterAttack += np.sum(np.equal(adversarialPrediction, label.cpu().data.numpy()))
     
     with open(args.output_path, 'a') as f:
         f.write('====================%s======================\n' % (time.asctime(time.localtime(time.time()))))
         f.write('Experiment with %s checkpoint %s on %s:\n' % (args.model, args.checkpoint, args.dataset))
-        f.write('PGD: batch size %d, eps = %d/255, alpha = %d/255, scale = %d/255, with %d steps\n'
-            % (args.batch_size, args.eps, args.alpha, args.scale, args.steps))
+        f.write('PGD: batch size %d, eps = %d/255, alpha = %d/255 with %d steps\n'
+            % (args.batch_size, args.eps, args.alpha, args.steps))
         f.write('\tTotal Number of Examples Tested: %d\n' % (numExamples))
         f.write('\tSuccess Rate Before Attack: %.2f\n' % (numSuccessBeforeAttack/numExamples))
         f.write('\tSuccess Rate After Attack: %.2f\n' % (numSuccessAfterAttack/numExamples))
+
+if __name__ == '__main__':
+    main()

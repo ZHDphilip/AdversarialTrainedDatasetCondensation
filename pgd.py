@@ -118,9 +118,6 @@ class PGD(Attack):
         images = images.clone().detach().to(self.device)
         labels = labels.clone().detach().to(self.device)
 
-        if self.targeted:
-            target_labels = self.get_target_label(images, labels)
-
         loss = nn.CrossEntropyLoss()
 
         adv_images = images.clone().detach()
@@ -132,13 +129,10 @@ class PGD(Attack):
 
         for _ in range(self.steps):
             adv_images.requires_grad = True
-            outputs = self.get_logits(adv_images)
+            outputs = self.model(adv_images)
 
             # Calculate loss
-            if self.targeted:
-                cost = -loss(outputs, target_labels)
-            else:
-                cost = loss(outputs, labels)
+            cost = loss(outputs, labels)
 
             # Update adversarial images
             grad = torch.autograd.grad(cost, adv_images,
